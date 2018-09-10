@@ -1,35 +1,160 @@
 #!/usr/bin/env node
 
-try {
-  eval('let __nodeTest = 123;');
-} catch(e) {
-  if (e.name === 'SyntaxError') {
-    console.error("unsupported version of NodeJS. Make sure you are running nodejs 8.11.3 or above");
+/* global __dirname __filename process require */
 
-    process.exit();
+// this script shouldn't use JS syntax or APIs *un*supported by any node
+// version >=4.0.0, so unsupported versions from v4.0.0+ will get embarklog
+// error output instead of a syntax error or runtime error
+// See: https://node.green/
+
+// KEY ASSUMPTION: for a DApp to be valid, from embark's perspective, it must
+// have a parsable embark.json file in its top-level directory; if that
+// requirement changes in the future (hypothetical example: embark.json info
+// can be embedded in package.json under `{"embark": {...}}` vs. stored in a
+// separate file) then this script must be revised
+
+function main() {
+  var noShim = false;
+  var idx = process.argv.indexOf('--no-shim');
+  if (idx > -1) {
+    process.argv.splice(idx, 1);
+    noShim = true;
+  }
+
+  if (noShim) {
+    // fast code path for cmd execution
+    return EmbarkCmd.prototype.exec();
+  }
+
+  var invokedEmbark = (new EmbarkCmd(__filename)).handle();
+  var localEmbark;
+
+  // findUp search begins in process.cwd() by default, but embark.json could
+  // be in a subdir if embark was invoked via `npm run` (which changes cwd to
+  // package.json's dir) and the package.json is in a dir above the top-level
+  // DApp dir; so start at INIT_CWD if that has been set (by npm, presumably)
+  // See: https://docs.npmjs.com/cli/run-script
+  var INIT_CWD = process.env.INIT_CWD ? process.env.INIT_CWD : process.cwd();
+  // allow for env override
+  INIT_CWD = process.env.DAPP_PATH ? process.env.DAPP_PATH : INIT_CWD;
+  var embarkJson = (new EmbarkJson(
+    findUp.sync('embark.json', {cwd: INIT_CWD})
+      || path.join(INIT_CWD, 'embark.json'),
+    process.argv[2]
+  )).setup();
+
+  var dappPath = embarkJson.dirname;
+  // set working dir to dir of embark.json, assumed to be DApp's top-level dir
+  process.chdir(dappPath);
+  process.env.DAPP_PATH = dappPath;
+  process.env.PWD = dappPath;
+
+  /* attempt to find a "local" embark in or above but not below dappPath
+
+     let `dappPath/(([../])*)bin/embark` be a local "containing" embark
+
+     let `dappPath/(([../])*)node_modules/embark/bin/embark` be a local
+     "installed" embark
+
+     if a local installed embark is found but is higher in the dir structure
+     than a found local containing embark, containing embark will be
+     preferred
+
+     according to the above rule and current implementation: if a local
+     installed embark is found within a local containing embark's own
+     node_modules (that would be weird), installed embark will be preferred
+
+     invoked embark may find itself as local embark, but that is detected prior
+     to cmd execution by comparing `cmdrealpath` props
+
+     if no local embark is found then cmd execution will use invoked embark */
+
+  var containingEmbark = (
+    new EmbarkCmdLocalContaining(
+      findUp.sync('bin/embark', {cwd: dappPath}),
+      invokedEmbark
+    )
+  ).setup();
+
+  var installedEmbark = (
+    new EmbarkCmdLocalInstalled(
+      findUp.sync('node_modules/embark/bin/embark', {cwd: dappPath}),
+      invokedEmbark
+    )
+  ).setup();
+
+  containingEmbark.setActive(installedEmbark);
+  installedEmbark.setActive(containingEmbark);
+
+  // only one of the two or neither will be active
+  if (installedEmbark.active) {
+    localEmbark = installedEmbark;
+  }
+  if (containingEmbark.active) {
+    localEmbark = containingEmbark;
+  }
+
+  // look for package.json files from dappPath < ceilingDir
+  var ceilingDir = localEmbark ? localEmbark.pkgDir : null;
+  var closestPkgJson, foundPkgJson;
+  var startDir = dappPath;
+
+  function stop() {
+    foundPkgJson = pkgUp.sync(startDir);
+    if (foundPkgJson && !closestPkgJson) {
+      closestPkgJson = foundPkgJson;
+    }
+    var dir = foundPkgJson ? path.dirname(foundPkgJson) : null;
+    var stop = !dir
+        || dir === ceilingDir
+        || (ceilingDir && subdir(dir, ceilingDir));
+    if (!stop) {
+      startDir = path.join(startDir, '..');
+    }
+    return stop;
+  }
+
+  while (!stop()) {
+    (new PkgJsonLocal(foundPkgJson)).handle();
+  }
+
+  localEmbark && localEmbark.log();
+  embarkJson.log();
+
+  if (!closestPkgJson && localEmbark instanceof EmbarkCmdLocalInstalled) {
+    closestPkgJson = localEmbark.pkgJsonLocalExpected;
+  }
+
+  if (isDappCmd(embarkJson.cmd) && !closestPkgJson) {
+    var loglevel = 'error';
+    reportMissing(path.join(dappPath, 'package.json'), loglevel);
+    reportMissingDappJson(embarkJson.cmd, loglevel, 'package', 'in or above');
+    exitWithError();
+  }
+
+  process.env.PKG_PATH = closestPkgJson ? closestPkgJson.dirname: dappPath;
+
+  var whichEmbark;
+  if (localEmbark && localEmbark.cmdrealpath !== invokedEmbark.cmdrealpath) {
+    whichEmbark = localEmbark;
+  } else {
+    whichEmbark = invokedEmbark;
+  }
+
+  process.env.EMBARK_PATH = whichEmbark.pkgDir;
+  whichEmbark.exec();
+}
+
   }
 }
 
-function launchEmbark() {
   var Cmd = require('../cmd/cmd');
   var cli = new Cmd();
   cli.process(process.argv);
-}
 
-const path = require('path');
-try {
-  const dappPackage = require(path.join(process.cwd(), 'package.json'));
-  require(path.join(process.cwd(), 'embark.json')); // Make sure we are in a Dapp
-  require('check-dependencies')(dappPackage, (state) => {
-    if (state.status) {
-      require('colors');
-      console.error('\nMissing dependencies. Please run npm install'.red);
-      process.exit();
     }
-    launchEmbark();
-  });
-} catch (_e) {
-  // We are not in a Dapp
-  launchEmbark();
 }
 
+// -----------------------------------------------------------------------------
+
+main();
