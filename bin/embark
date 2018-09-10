@@ -156,6 +156,153 @@ var parseJsonWithErrors = require('json-parse-better-errors');
 var pkgUp = require('pkg-up');
 var semver = require('semver');
 var subdir = require('subdir');
+
+embarklog.heading = 'embark';
+
+var _logged = false;
+function logged(which) {
+  var embarklog_which = embarklog[which];
+  return function () {
+    _logged = true;
+    embarklog_which.apply(embarklog, arguments);
+  };
+}
+
+embarklog.error = logged('error');
+embarklog.info = logged('info');
+embarklog.warn = logged('warn');
+
+function blankLineMaybe(which) {
+  if (_logged) {
+    console[which]();
+  }
+}
+
+var isNpmRun = process.env.hasOwnProperty('npm_lifecycle_script');
+function blankLineTrailingMaybe(which) {
+  if (isNpmRun) {
+    console[which]();
+  }
+}
+
+function checkPkg(pkgDir, scopes) {
+  try {
+    var config = {packageDir: pkgDir};
+    if (scopes) {
+      config.scopeList = scopes;
+    }
+    var checked = checkDeps.sync(config);
+    if (checked.error.length) {
+      return checked.error;
+    }
+  } catch (e) {}
+}
+
+function exitWithError(code) {
+  blankLineTrailingMaybe('error');
+  process.exit(code == null ? 1 : code);
+}
+
+function isDappCmd(cmd) {
+  return [
+    void 0,
+    '-V',
+    '--version',
+    '-h',
+    '--help',
+    'new',
+    'demo',
+    'version',
+    'help'
+  ].indexOf(cmd) === -1;
+}
+
+function isObject(val) {
+  return val != null && typeof val === 'object' && Array.isArray(val) === false;
+}
+
+function parseJson(filepath) {
+  try {
+    return require(filepath);
+  } catch (e) {}
+}
+
+function parseRange(range) {
+  try {
+    return semver.Range(range).range;
+  } catch (e) {}
+}
+
+function realpath(filepath) {
+  try {
+    return fs.realpathSync(filepath);
+  } catch (e) {}
+}
+
+function reportMissing(filepath, loglevel) {
+  try {
+    // force the exception
+    fs.realpathSync(filepath);
+  } catch (e) {
+    blankLineMaybe(loglevel);
+    embarklog[loglevel]('path', e.path);
+    embarklog[loglevel]('code', e.code);
+    embarklog[loglevel]('errno', e.errno);
+    embarklog[loglevel]('syscall', e.syscall);
+    embarklog[loglevel](e.code.toLowerCase(), e.message);
+  }
+}
+
+function reportMissingDappJson(cmd, loglevel, kind, where) {
+  blankLineMaybe(loglevel);
+  embarklog[loglevel](
+    '',
+    `Could not locate your DApp's ${kind}.json file`
+  );
+  embarklog[loglevel](
+    '',
+    `Make sure a valid ${kind}.json file exists ${where} your DApp's top-level directory`
+  );
+  if (isDappCmd(cmd)) {
+    embarklog[loglevel](
+      '',
+      `Embark command '${cmd}' can only be used inside a valid DApp directory structure`
+    );
+  }
+}
+
+function reportPkgErrors(errors, filepath, loglevel) {
+  blankLineMaybe(loglevel);
+  embarklog[loglevel]('file', filepath);
+  embarklog[loglevel]('code', `EPKGCHK`);
+  embarklog[loglevel]('package', errors.join('\n'));
+}
+
+function reportUnparsable(filepath, loglevel) {
+  try {
+    // force the exception
+    parseJsonWithErrors(stripBOM(fs.readFileSync(filepath)));
+  } catch (e) {
+    var basename = path.basename(filepath);
+    blankLineMaybe(loglevel);
+    embarklog[loglevel]('file', filepath);
+    embarklog[loglevel]('code', `EJSONPARSE`);
+    embarklog[loglevel]('JSON parse', `Failed to parse json`);
+    embarklog[loglevel]('JSON parse', e.message);
+    embarklog[loglevel]('JSON parse', `Failed to parse ${basename} data.`);
+    embarklog[loglevel]('JSON parse', `${basename} must be actual JSON, not just JavaScript.`);
+  }
+}
+
+// See: https://github.com/npm/cli/blob/v6.4.1/lib/utils/parse-json.js#L16
+function stripBOM (content) {
+  content = content.toString();
+  if (content.charCodeAt(0) === 0xFEFF) {
+    content = content.slice(1);
+  }
+  return content;
+}
+
   }
 }
 
