@@ -715,12 +715,190 @@ PkgJsonLocalExpected.prototype.setup = function () {
   return this;
 };
 
+// -- bin/embark commands ------------------------------------------------------
+
+function EmbarkCmd(cmdpath, kind) {
+  this.active = void 0;
+  this.cmdpath = cmdpath;
+  this.cmdrealpath = void 0;
+  this.kind = kind || 'invoked';
+  this.pkgDir = void 0;
+  this.pkgJson = void 0;
+}
+
+EmbarkCmd.prototype.exec = function () {
   var Cmd = require('../cmd/cmd');
   var cli = new Cmd();
+  _logged && console[this.loglevel]();
   cli.process(process.argv);
+};
 
-    }
+EmbarkCmd.prototype.handle = function () {
+  this.setup();
+  this.log();
+  return this;
+};
+
+EmbarkCmd.prototype.log = function () {
+  this.logMissingCmd();
+  this.pkgJson.log();
+};
+
+EmbarkCmd.prototype.loglevel = 'info';
+
+EmbarkCmd.prototype.logMissingCmd = function () {
+  var oldlevel = this.loglevel;
+  this.loglevel = 'error';
+  if (!this.cmdrealpath) {
+    reportMissing(this.cmdpath, this.loglevel);
+    console[this.loglevel]();
+    embarklog[this.loglevel](
+      '',
+      [`Could not resolve ${this.kind} embark command path with require('fs').realpathSync`,
+       `Maybe a broken symbolic link?`].join('\n')
+    );
+    exitWithError();
+  }
+  this.loglevel = oldlevel;
+};
+
+EmbarkCmd.prototype.setCmdrealpath = function () {
+  if (this.cmdpath) {
+    this.cmdrealpath = realpath(this.cmdpath);
+  }
+};
+
+EmbarkCmd.prototype.setPkgDir = function () {
+  if (this.cmdpath) {
+    this.pkgDir = path.join(path.dirname(this.cmdpath), '..');
+  }
+};
+
+EmbarkCmd.prototype.setPkgJson = function () {
+  if (this.cmdrealpath) {
+    this.pkgJson = (
+      new PkgJsonEmbark(
+        path.join(this.pkgDir, 'package.json'),
+        this.kind
+      )
+    ).setup();
+  }
+};
+
+EmbarkCmd.prototype.setup = function () {
+  this.setCmdrealpath();
+  this.setPkgDir();
+  this.setPkgJson();
+  return this;
+};
+
+// -- bin/embark :: local ------------------------------------------------------
+
+function EmbarkCmdLocal(cmdpath, invokedEmbark) {
+  EmbarkCmd.call(this, cmdpath, 'local');
+  this.invokedEmbark = invokedEmbark;
 }
+EmbarkCmdLocal.prototype = Object.create(EmbarkCmd.prototype);
+EmbarkCmdLocal.prototype.constructor = EmbarkCmdLocal;
+
+EmbarkCmdLocal.prototype.exec = function () {
+  process.argv[1] = this.cmdpath;
+  try {
+    var v = semver(this.pkgJson.version);
+    // 3.2.0 is the first version which features the cli shim; older versions
+    // will complain about an unsupported --no-shim option; any prerelease tag
+    // is stripped, otherwise the comparison will not behave as desired
+    // See: https://docs.npmjs.com/misc/semver#prerelease-tags
+    if (semver.satisfies(`${v.major}.${v.minor}.${v.patch}`, '>=3.2.0')) {
+      // enable fast path
+      process.argv.push('--no-shim');
+    }
+  } catch (e) {}
+  blankLineMaybe(this.loglevel);
+  embarklog[this.loglevel]('invoked', this.invokedEmbark.cmdpath);
+  embarklog[this.loglevel]('located', this.cmdpath);
+  embarklog[this.loglevel](
+    '',
+    `Switching from ${this.invokedEmbark.pkgJson.pkg} to ${this.pkgJson.pkg}`
+  );
+  console[this.loglevel]();
+  require(this.cmdpath);
+};
+
+EmbarkCmdLocal.prototype.log = function () {
+  if (this.cmdrealpath !== this.invokedEmbark.cmdrealpath) {
+    EmbarkCmd.prototype.log.call(this);
+  }
+};
+
+EmbarkCmdLocal.prototype.setup = function () {
+  EmbarkCmd.prototype.setup.call(this, 'local');
+  return this;
+};
+
+// -- bin/embark :: local containing --------------------------------------------
+
+function EmbarkCmdLocalContaining(cmdpath, invokedEmbark) {
+  EmbarkCmdLocal.call(this, cmdpath, invokedEmbark);
+}
+EmbarkCmdLocalContaining.prototype = Object.create(EmbarkCmdLocal.prototype);
+EmbarkCmdLocalContaining.prototype.constructor = EmbarkCmdLocalContaining;
+
+EmbarkCmdLocalContaining.prototype.setActive = function (installedEmbark) {
+  if (this.cmdrealpath
+      && (!installedEmbark.cmdrealpath
+          || subdir(
+            installedEmbark.pkgJsonLocalExpected.dirname,
+            this.pkgDir
+          ))) {
+    this.active = true;
+  }
+};
+
+// -- bin/embark :: local installed --------------------------------------------
+
+function EmbarkCmdLocalInstalled(cmdpath, invokedEmbark) {
+  EmbarkCmdLocal.call(this, cmdpath, invokedEmbark);
+}
+EmbarkCmdLocalInstalled.prototype = Object.create(EmbarkCmdLocal.prototype);
+EmbarkCmdLocalInstalled.prototype.constructor = EmbarkCmdLocalInstalled;
+
+EmbarkCmdLocalInstalled.prototype.log = function () {
+  EmbarkCmdLocal.prototype.log.call(this);
+  this.pkgJsonLocalExpected.log();
+};
+
+EmbarkCmdLocalInstalled.prototype.setActive = function (containingEmbark) {
+  if (this.cmdrealpath
+      && (!containingEmbark.cmdrealpath
+          || subdir(containingEmbark.pgDir, this.pkgDir))) {
+    this.active = true;
+  }
+};
+
+EmbarkCmdLocalInstalled.prototype.setPkgJson = function () {
+  if (this.cmdrealpath) {
+    var pkgJson = (
+      new PkgJsonEmbark(path.join(this.pkgDir, 'package.json'), this.kind)
+    );
+    pkgJson.noCheck = true;
+    this.pkgJson = pkgJson.setup();
+  }
+};
+
+EmbarkCmdLocalInstalled.prototype.setPkgJsonLocalExpected = function () {
+  if (this.cmdrealpath) {
+    this.pkgJsonLocalExpected = (
+      new PkgJsonLocalExpected(path.join(this.pkgDir, '../../package.json'))
+    ).setup();
+  }
+};
+
+EmbarkCmdLocalInstalled.prototype.setup = function () {
+  EmbarkCmdLocal.prototype.setup.call(this);
+  this.setPkgJsonLocalExpected();
+  return this;
+};
 
 // -----------------------------------------------------------------------------
 
