@@ -145,6 +145,17 @@ function main() {
   whichEmbark.exec();
 }
 
+// -----------------------------------------------------------------------------
+
+var checkDeps = require('check-dependencies');
+var embarklog = require('npmlog');
+var findUp = require('find-up');
+var fs = require('fs');
+var path = require('path');
+var parseJsonWithErrors = require('json-parse-better-errors');
+var pkgUp = require('pkg-up');
+var semver = require('semver');
+var subdir = require('subdir');
   }
 }
 
