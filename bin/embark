@@ -303,8 +303,417 @@ function stripBOM (content) {
   return content;
 }
 
-  }
+// -- json files ---------------------------------------------------------------
+
+function Json(filepath) {
+  this.filepath = filepath;
+  this.dirname = void 0;
+  this.json = void 0;
+  this.realpath = void 0;
 }
+
+Json.prototype.handle = function () {
+  this.setup();
+  this.log();
+  return this;
+};
+
+Json.prototype.log = function () {
+  this.logMissingFile();
+  this.logUnparsable();
+};
+
+Json.prototype.loglevel = 'warn';
+
+Json.prototype.logMissingFile = function () {
+  if (!this.realpath) {
+    reportMissing(this.filepath, this.loglevel);
+    return true;
+  }
+};
+
+Json.prototype.logUnparsable = function () {
+  if (this.realpath && !this.json) {
+    reportUnparsable(this.filepath, this.loglevel);
+    return true;
+  }
+};
+
+Json.prototype.setDirname = function () {
+  if (this.filepath) {
+    this.dirname = path.dirname(this.filepath);
+  }
+};
+
+Json.prototype.setJson = function () {
+  if (this.realpath) {
+    this.json = parseJson(this.filepath);
+  }
+};
+
+Json.prototype.setRealpath = function () {
+  if (this.filepath) {
+    this.realpath = realpath(this.filepath);
+  }
+};
+
+Json.prototype.setup = function () {
+  this.setRealpath();
+  this.setDirname();
+  this.setJson();
+  return this;
+};
+
+// -- embark.json --------------------------------------------------------------
+
+function EmbarkJson(filepath, cmd) {
+  Json.call(this, filepath);
+  this.cmd = cmd;
+}
+EmbarkJson.prototype = Object.create(Json.prototype);
+EmbarkJson.prototype.constructor = EmbarkJson;
+
+EmbarkJson.prototype.loglevel = 'warn';
+
+EmbarkJson.prototype.log = function () {
+  this.logMissingFile();
+  this.logUnparsable();
+};
+
+EmbarkJson.prototype.logMissingFile = function () {
+  var oldlevel = this.loglevel;
+  this.loglevel = 'error';
+  if (isDappCmd(this.cmd) && Json.prototype.logMissingFile.call(this)) {
+    reportMissingDappJson(this.cmd, this.loglevel, 'embark', 'in');
+    exitWithError();
+  }
+  this.loglevel = oldlevel;
+};
+
+EmbarkJson.prototype.logUnparsable = function () {
+  var _isDappCmd = isDappCmd(this.cmd);
+  var oldlevel = this.loglevel;
+  if (_isDappCmd) {
+    this.loglevel = 'error';
+  }
+  if (Json.prototype.logUnparsable.call(this)) {
+    console[this.loglevel]();
+    embarklog[this.loglevel]('', `Could not parse your DApp's embark.json file`);
+    if (_isDappCmd) {
+      exitWithError();
+    }
+  }
+  this.loglevel = oldlevel;
+};
+
+// -- package.json -------------------------------------------------------------
+
+function PkgJson(filepath) {
+  Json.call(this, filepath);
+  this.noCheck = void 0;
+}
+PkgJson.prototype = Object.create(Json.prototype);
+PkgJson.prototype.constructor = PkgJson;
+
+PkgJson.prototype.checkPkg = function () {
+  if (this.json && !this.noCheck) {
+    this.pkgErrors = checkPkg(this.dirname, this.checkScopes);
+  }
+};
+
+PkgJson.prototype.log = function () {
+  Json.prototype.log.call(this);
+  this.logPkgErrors();
+};
+
+PkgJson.prototype.logPkgErrors = function () {
+  if (this.pkgErrors) {
+    reportPkgErrors(this.pkgErrors, this.filepath, this.loglevel);
+    return true;
+  }
+};
+
+PkgJson.prototype.setup = function () {
+  Json.prototype.setup.call(this);
+  this.checkPkg();
+  return this;
+};
+
+// -- package.json :: of an embark pkg -----------------------------------------
+
+function PkgJsonEmbark(filepath, kind) {
+  PkgJson.call(this, filepath);
+  this.kind = kind || 'invoked';
+  this.nodeRange = void 0;
+  this.pkg = void 0;
+  this.version = void 0;
+}
+PkgJsonEmbark.prototype = Object.create(PkgJson.prototype);
+PkgJsonEmbark.prototype.constructor = PkgJsonEmbark;
+
+PkgJsonEmbark.prototype.checkScopes = ['dependencies'];
+
+PkgJsonEmbark.prototype.log = function () {
+  PkgJson.prototype.log.call(this);
+  this.logMissingVersion();
+  this.logUnsupportedNode();
+};
+
+PkgJsonEmbark.prototype.logMissingFile = function () {
+  var oldlevel = this.loglevel;
+  this.loglevel = 'error';
+  if (PkgJson.prototype.logMissingFile.call(this)) {
+    console[this.loglevel]();
+    embarklog[this.loglevel](
+      '',
+      `Could not locate ${this.kind} embark's package.json file`
+    );
+    exitWithError();
+  }
+  this.loglevel = oldlevel;
+};
+
+PkgJsonEmbark.prototype.logMissingVersion = function () {
+  if (this.json && this.version === '???') {
+    blankLineMaybe(this.loglevel);
+    embarklog[this.loglevel]('file', this.filepath);
+    embarklog[this.loglevel](
+      '',
+      `No version is specified in ${this.kind} embark's package.json file`
+    );
+    return true;
+  }
+};
+
+PkgJsonEmbark.prototype.logPkgErrors = function () {
+  var oldlevel = this.loglevel;
+  this.loglevel = 'error';
+  if (PkgJson.prototype.logPkgErrors.call(this)) {
+    console[this.loglevel]();
+    embarklog[this.loglevel](
+      '',
+      [`Dependencies are missing relative to ${this.kind} embark's package.json in:`,
+       `${this.dirname}/`].join('\n')
+    );
+    exitWithError();
+  }
+  this.loglevel = oldlevel;
+};
+
+PkgJsonEmbark.prototype.logUnparsable = function () {
+  var oldlevel = this.loglevel;
+  this.loglevel = 'error';
+  if (PkgJson.prototype.logUnparsable.call(this)) {
+    console[this.loglevel]();
+    embarklog[this.loglevel](
+      `Could not parse ${this.kind} embark's package.json file`
+    );
+    exitWithError();
+  }
+  this.loglevel = oldlevel;
+};
+
+PkgJsonEmbark.prototype.logUnsupportedNode = function () {
+  var ret;
+  var nodeRange = this.nodeRange;
+  if (typeof nodeRange === 'undefined') {
+    blankLineMaybe(this.loglevel);
+    embarklog[this.loglevel]('file', this.filepath);
+    embarklog[this.loglevel](
+      'engine',
+      `package.json of ${this.kind} ${this.pkg} does not specify %j`,
+      {engines: {node: '[semver]'}}
+    );
+    embarklog[this.loglevel](
+      'engine',
+      `Defaulting to: %j`, {engines: {node: this.nodeRangeDefault}}
+    );
+    ret = true;
+    nodeRange = this.nodeRangeDefault;
+  }
+
+  nodeRange = parseRange(nodeRange);
+  if (!nodeRange) {
+    blankLineMaybe(this.loglevel);
+    embarklog[this.loglevel]('file', this.filepath);
+    embarklog[this.loglevel](
+      'engine'
+      `package.json of ${this.kind} ${this.pkg} does not specify a valid %j`,
+      {engines: {node: '[semver]'}}
+    );
+    embarklog[this.loglevel](
+      'engine',
+      `Specified: %j`, {engines: {node: nodeRange}}
+    );
+    embarklog[this.loglevel](
+      'engine',
+      `Defaulting to: %j`, {engines: {node: this.defaultNodeRange}}
+    );
+    ret = true;
+    nodeRange = this.nodeRangeDefault;
+  }
+
+  var procNodeVer = semver.clean(process.version);
+  var oldlevel = this.loglevel;
+  this.loglevel = 'error';
+  if (!semver.satisfies(procNodeVer, nodeRange)) {
+    blankLineMaybe(this.loglevel);
+    embarklog[this.loglevel]('notsup', `Unsupported runtime`);
+    embarklog[this.loglevel](
+      'notsup',
+      `${this.kind} ${this.pkg} is not compatible with your version of node`
+    );
+    embarklog[this.loglevel]('notsup', `Required:`, nodeRange);
+    embarklog[this.loglevel]('notsup', `Actual:`, procNodeVer);
+    exitWithError();
+  }
+  this.loglevel = oldlevel;
+  return ret;
+};
+
+// if changing to the `nodeRangeDefault` value, make sure to manually check
+// that it's a valid semver range, otherwise fallback logic in the prototype
+// methods won't be reliable
+PkgJsonEmbark.prototype.nodeRangeDefault = semver.Range('>=8.11.3').range;
+
+PkgJsonEmbark.prototype.setNodeRange = function () {
+  if (isObject(this.json)
+      && this.json.hasOwnProperty('engines')
+      && this.json.engines.hasOwnProperty('node')) {
+    this.nodeRange = this.json.engines.node;
+  }
+};
+
+PkgJsonEmbark.prototype.setPkg = function () {
+  this.pkg = `embark@${this.version}`;
+};
+
+PkgJsonEmbark.prototype.setVersion = function () {
+  if (isObject(this.json) && this.json.version) {
+    this.version = this.json.version;
+  } else {
+    this.version = '???';
+  }
+};
+
+PkgJsonEmbark.prototype.setup = function () {
+  PkgJson.prototype.setup.call(this);
+  this.setVersion();
+  this.setPkg();
+  this.setNodeRange();
+  return this;
+};
+
+// -- package.json :: local to DApp --------------------------------------------
+
+function PkgJsonLocal(filepath) {
+  PkgJson.call(this, filepath);
+}
+PkgJsonLocal.prototype = Object.create(PkgJson.prototype);
+PkgJsonLocal.prototype.constructor = PkgJsonLocal;
+
+PkgJsonLocal.prototype.logMissingFile = function () {
+  var oldlevel = this.loglevel;
+  this.loglevel = 'error';
+  if (PkgJson.prototype.logMissingFile.call(this)) {
+    console[this.loglevel]();
+    embarklog[this.loglevel](
+      '',
+      [`Could not resolve local package.json path with require('fs').realpathSync`
+       `Maybe a broken symbolic link?`].join('\n')
+    );
+    exitWithError();
+  }
+  this.loglevel = oldlevel;
+};
+
+PkgJsonLocal.prototype.logPkgErrors = function () {
+  var oldlevel = this.loglevel;
+  this.loglevel = 'error';
+  if (PkgJson.prototype.logPkgErrors.call(this)) {
+    console[this.loglevel]();
+    embarklog[this.loglevel](
+      '',
+      [`Dependencies are missing relative to local package.json in:`,
+       `${this.dirname}/`].join('\n')
+    );
+    exitWithError();
+  }
+  this.loglevel = oldlevel;
+};
+
+PkgJsonLocal.prototype.logUnparsable = function () {
+  var oldlevel = this.loglevel;
+  this.loglevel = 'error';
+  if (PkgJson.prototype.logUnparsable.call(this)) {
+    embarklog[this.loglevel]('', `Could not parse a local package.json file`);
+    exitWithError();
+  }
+  this.loglevel = oldlevel;
+};
+
+// -- package.json :: local to DApp, expected by local installed embark --------
+
+function PkgJsonLocalExpected(filepath) {
+  PkgJsonLocal.call(this, filepath);
+  this.embarkDep = void 0;
+}
+PkgJsonLocalExpected.prototype = Object.create(PkgJsonLocal.prototype);
+PkgJsonLocalExpected.prototype.constructor = PkgJsonLocalExpected;
+
+PkgJsonLocalExpected.prototype.log = function () {
+  PkgJsonLocal.prototype.log.call(this);
+  this.logMissingEmbarkDep();
+};
+
+PkgJsonLocalExpected.prototype.logMissingEmbarkDep = function () {
+  var oldlevel = this.loglevel;
+  this.loglevel = 'error';
+  if (this.json && !this.embarkDep) {
+    blankLineMaybe(this.loglevel);
+    embarklog[this.loglevel]('file', this.filepath);
+    embarklog[this.loglevel](
+      '',
+      [`Could not find embark specified in "dependencies" or "devDependencies" of local package.json file`,
+       `But embark was found in node_modules relative to that file:`,
+       `${this.dirname}/node_modules/embark/`].join('\n')
+    );
+    exitWithError();
+  }
+  this.loglevel = oldlevel;
+};
+
+PkgJsonLocalExpected.prototype.logMissingFile = function () {
+  var oldlevel = this.loglevel;
+  this.loglevel = 'error';
+  // PkgJson.prototype NOT PkgJsonLocal.prototype
+  if (PkgJson.prototype.logMissingFile.call(this)) {
+    console[this.loglevel]();
+    embarklog[this.loglevel](
+      '',
+      [`Could not find expected local package.json relative to embark found in:`
+       `${this.dirname}/node_modules/embark/`].join('\n')
+    );
+    exitWithError();
+  }
+  this.loglevel = oldlevel;
+};
+
+PkgJsonLocalExpected.prototype.setEmbarkDep = function () {
+  if (isObject(this.json)) {
+    if (this.json.dependencies) {
+      this.embarkDep = this.json.dependencies.embark;
+    } else if (this.json.devDependencies) {
+      this.embarkDep = this.json.devDependencies.embark;
+    }
+  }
+};
+
+PkgJsonLocalExpected.prototype.setup = function () {
+  PkgJsonLocal.prototype.setup.call(this);
+  this.setEmbarkDep();
+  return this;
+};
 
   var Cmd = require('../cmd/cmd');
   var cli = new Cmd();
