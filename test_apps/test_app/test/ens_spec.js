@@ -19,7 +19,8 @@ config({
         `ENSRegistry.methods.setOwner('${rootNode}', web3.eth.defaultAccount).send().then(() => {
           ENSRegistry.methods.setResolver('${rootNode}', "$Resolver").send();
           Resolver.methods.setAddr('${rootNode}', '${address}').send();
-        });`
+        });
+        null;`
       ]
     }
   }
